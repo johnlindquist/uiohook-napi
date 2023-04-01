@@ -18,14 +18,18 @@ static int hook_thread_status;
 static uv_mutex_t hook_running_mutex;
 static uv_mutex_t hook_control_mutex;
 static uv_cond_t hook_control_cond;
+static napi_ref start_cb_ref;
+static napi_ref stop_cb_ref;
 
 static dispatcher_t user_dispatcher = NULL;
 
-bool logger_proc(unsigned int level, const char* format, ...) {
+bool logger_proc(unsigned int level, const char *format, ...)
+{
   bool status = false;
 
   va_list args;
-  switch (level) {
+  switch (level)
+  {
   case LOG_LEVEL_WARN:
   case LOG_LEVEL_ERROR:
     va_start(args, format);
@@ -37,14 +41,16 @@ bool logger_proc(unsigned int level, const char* format, ...) {
   return status;
 }
 
-// NOTE: The following callback executes on the same thread that hook_run() is called 
+// NOTE: The following callback executes on the same thread that hook_run() is called
 // from.  This is important because hook_run() attaches to the operating systems
 // event dispatcher and may delay event delivery to the target application.
-// Furthermore, some operating systems may choose to disable your hook if it 
-// takes to long to process.  If you need to do any extended processing, please 
+// Furthermore, some operating systems may choose to disable your hook if it
+// takes to long to process.  If you need to do any extended processing, please
 // do so by copying the event to your own queued dispatch thread.
-void worker_dispatch_proc(uiohook_event* const event) {
-  switch (event->type) {
+void worker_dispatch_proc(uiohook_event *const event)
+{
+  switch (event->type)
+  {
   case EVENT_HOOK_ENABLED:
     // Lock the running mutex so we know if the hook is enabled.
     uv_mutex_lock(&hook_running_mutex);
@@ -71,7 +77,8 @@ void worker_dispatch_proc(uiohook_event* const event) {
   case EVENT_MOUSE_RELEASED:
   case EVENT_MOUSE_MOVED:
   case EVENT_MOUSE_DRAGGED:
-  case EVENT_MOUSE_WHEEL: {
+  case EVENT_MOUSE_WHEEL:
+  {
     user_dispatcher(event);
     break;
   }
@@ -81,26 +88,28 @@ void worker_dispatch_proc(uiohook_event* const event) {
   }
 }
 
-void hook_thread_proc(void* arg) {
-  #ifdef _WIN32
+void hook_thread_proc(void *arg)
+{
+#ifdef _WIN32
   // Attempt to set the thread priority to time critical.
   HANDLE this_thread = GetCurrentThread();
-  if (SetThreadPriority(this_thread, THREAD_PRIORITY_TIME_CRITICAL) == FALSE) {
+  if (SetThreadPriority(this_thread, THREAD_PRIORITY_TIME_CRITICAL) == FALSE)
+  {
     logger_proc(LOG_LEVEL_WARN, "%s [%u]: Could not set thread priority %li for thread %#p! (%#lX)\n",
-      __FUNCTION__, __LINE__, (long)THREAD_PRIORITY_TIME_CRITICAL,
-      this_thread, (unsigned long)GetLastError());
+                __FUNCTION__, __LINE__, (long)THREAD_PRIORITY_TIME_CRITICAL,
+                this_thread, (unsigned long)GetLastError());
   }
-  #else
+#else
   // Raise the thread priority
   pthread_t this_thread = pthread_self();
   struct sched_param params = {
-    .sched_priority = (sched_get_priority_max(SCHED_RR) / 2)
-  };
-  if (pthread_setschedparam(this_thread, SCHED_RR, &params) != 0) {
+      .sched_priority = (sched_get_priority_max(SCHED_RR) / 2)};
+  if (pthread_setschedparam(this_thread, SCHED_RR, &params) != 0)
+  {
     logger_proc(LOG_LEVEL_WARN, "%s [%u]: Could not set thread priority %i for thread 0x%lX!\n",
-      __FUNCTION__, __LINE__, params.sched_priority, (unsigned long)this_thread);
+                __FUNCTION__, __LINE__, params.sched_priority, (unsigned long)this_thread);
   }
-  #endif
+#endif
 
   // Set the hook status.
   hook_thread_status = hook_run();
@@ -111,7 +120,8 @@ void hook_thread_proc(void* arg) {
   uv_mutex_unlock(&hook_control_mutex);
 }
 
-int hook_enable() {
+int hook_enable()
+{
   // Lock the thread control mutex.  This will be unlocked when the
   // thread has finished starting, or when it has fully stopped.
   uv_mutex_lock(&hook_control_mutex);
@@ -119,31 +129,35 @@ int hook_enable() {
   // Set the initial status.
   int status = UIOHOOK_FAILURE;
 
-  if (uv_thread_create(&hook_thread, hook_thread_proc, NULL) == 0) {
-    // Wait for the thread to indicate that it has passed the 
-    // initialization portion by blocking until either a EVENT_HOOK_ENABLED 
+  if (uv_thread_create(&hook_thread, hook_thread_proc, NULL) == 0)
+  {
+    // Wait for the thread to indicate that it has passed the
+    // initialization portion by blocking until either a EVENT_HOOK_ENABLED
     // event is received or the thread terminates.
     uv_cond_wait(&hook_control_cond, &hook_control_mutex);
 
-    if (uv_mutex_trylock(&hook_running_mutex) == 0) {
-      // Lock Successful; The hook is not running but the hook_control_cond 
+    if (uv_mutex_trylock(&hook_running_mutex) == 0)
+    {
+      // Lock Successful; The hook is not running but the hook_control_cond
       // was signaled!  This indicates that there was a startup problem!
 
       // Get the status back from the thread.
       uv_thread_join(&hook_thread);
       status = hook_thread_status;
     }
-    else {
+    else
+    {
       // Lock Failure; The hook is currently running and wait was signaled
-      // indicating that we have passed all possible start checks.  We can 
+      // indicating that we have passed all possible start checks.  We can
       // always assume a successful startup at this point.
       status = UIOHOOK_SUCCESS;
     }
 
     logger_proc(LOG_LEVEL_DEBUG, "%s [%u]: Thread Result: (%#X).\n",
-      __FUNCTION__, __LINE__, status);
+                __FUNCTION__, __LINE__, status);
   }
-  else {
+  else
+  {
     status = UIOHOOK_ERROR_THREAD_CREATE;
   }
 
@@ -153,8 +167,8 @@ int hook_enable() {
   return status;
 }
 
-
-int uiohook_worker_start(dispatcher_t dispatch_proc) {
+int uiohook_worker_start(dispatcher_t dispatch_proc)
+{
   // Lock the thread control mutex.  This will be unlocked when the
   // thread has finished starting, or when it has fully stopped.
 
@@ -174,7 +188,8 @@ int uiohook_worker_start(dispatcher_t dispatch_proc) {
   // Start the hook and block.
   // NOTE If EVENT_HOOK_ENABLED was delivered, the status will always succeed.
   int status = hook_enable();
-  if (status != UIOHOOK_SUCCESS) {
+  if (status != UIOHOOK_SUCCESS)
+  {
     // Close event handles for the thread hook.
     uv_mutex_destroy(&hook_running_mutex);
     uv_mutex_destroy(&hook_control_mutex);
@@ -184,10 +199,12 @@ int uiohook_worker_start(dispatcher_t dispatch_proc) {
   return status;
 }
 
-int uiohook_worker_stop() {
+int uiohook_worker_stop()
+{
   int status = hook_stop();
 
-  if (status == UIOHOOK_SUCCESS) {
+  if (status == UIOHOOK_SUCCESS)
+  {
     uv_thread_join(&hook_thread);
 
     // Close event handles for the thread hook.
